@@ -1,103 +1,94 @@
 import logging
 import socket
-
-import args
-from bacpypes.core import run, stop, deferred
-from bacpypes.debugging import ModuleLogger
-from bacpypes.local.device import LocalDeviceObject
-from bacpypes.service.device import WhoIsIAmServices
-from bacpypes.object import AnalogInputObject, BinaryInputObject
-from bacpypes.app import BIPSimpleApplication
-from bacpypes.pdu import Address
-from bacpypes.service.object import ReadWritePropertyServices, ReadWritePropertyMultipleServices
 from threading import Timer
-import logging
+
+from bacpypes.core import run, deferred
+from bacpypes.local.device import LocalDeviceObject
+from bacpypes.app import BIPSimpleApplication
+from bacpypes.object import AnalogInputObject, BinaryInputObject
+from bacpypes.service.device import WhoIsIAmServices
+from bacpypes.service.object import ReadWritePropertyServices, ReadWritePropertyMultipleServices
+from bacpypes.pdu import Address
+from bacpypes.debugging import ModuleLogger
 
 logging.basicConfig(level=logging.DEBUG)
 _debug = 0
 _log = ModuleLogger(globals())
 
+# --- Custom Application Class ---
+class RoomControllerApplication(BIPSimpleApplication, WhoIsIAmServices, ReadWritePropertyMultipleServices):
+    def __init__(self, device, address):
+        super().__init__(device, address)
+        self.temp_sensor = AnalogInputObject(
+            objectIdentifier=("analogInput", 1),
+            objectName="RoomTemp",
+            presentValue=70.0,
+            units="degreesFahrenheit",
+            outOfService=True
+        )
 
-def create_virtual_device(device_id=12345, port=47808):
-    this_device = LocalDeviceObject(
-        objectName = "RoomController",
-        objectIdentifier= ("device", device_id),
-        maxApduLengthAcepted = 1024,
-        segmentationSupported = "segmentedBoth",
-        vendorIdentifier = 15,
-        vendorName="B612",
-        maxApduLengthAccepted=1024,
+        self.fan_output = BinaryInputObject(
+            objectIdentifier=("binaryInput", 1),
+            objectName="Fan",
+            presentValue=0,
+            outOfService=True
+        )
 
-    )
+        # Add objects to the device
+        self.add_object(self.temp_sensor)
+        self.add_object(self.fan_output)
 
-    temp_sensor = AnalogInputObject(
-        objectIdentifier=("analogInput", 1),
-        objectName="RoomTemp",
-        presentValue=70.0,
-        units="degreesFahrenheit",
-        outOfService=True # allow programmatic control
-    )
+        # Start logic loop
+        deferred(self.logic_loop)
 
-    fan_output = BinaryInputObject(
-        objectIdentifier=("binaryInput", 1),
-        objectName="Fan",
-        presentValue=0,  # Fan is off initially
-        outOfService=True  # allow programmatic control
-    )
+        def request(self, apdu):
+            BIPSimpleApplication.request(self, apdu)
 
-    this_device.objectList.append(temp_sensor)
-    this_device.objectList.append(fan_output)
+        def indication(self, apdu):
+            BIPSimpleApplication.indication(self, apdu)
 
-    address = Address(f"0.0.0.0:{port}")
-    application = BIPSimpleApplication(this_device, address)
-    application.add_object(temp_sensor)
-    application.add_object(fan_output)
-    application.add_capability(WhoIsIAmServices)
-    application.add_capability(ReadWritePropertyServices)
+        def response(self, apdu):
+            BIPSimpleApplication.response(self, apdu)
 
-    return application, temp_sensor, fan_output
+        def confirmation(self, apdu):
+            BIPSimpleApplication.confirmation(self, apdu)
 
-def logic_loop(temp_sensor, fan_output):
-    #temperature changing
-    temp_sensor.presentValue += 0.5
-    if temp_sensor.presentValue > 80.0:
-        temp_sensor.presentValue = 68.0
+    def logic_loop(self):
+        self.temp_sensor.presentValue += 0.5
+        if self.temp_sensor.presentValue > 80.0:
+            self.temp_sensor.presentValue = 68.0
 
-    if temp_sensor.presentValue > 75.0:
-        fan_output.presentValue = 1 # Turn fan on
-    else:
-        fan_output.presentValue = 0 # Turn fan off
+        self.fan_output.presentValue = 1 if self.temp_sensor.presentValue > 75.0 else 0
 
-    print(f"Temp: {temp_sensor.presentValue:.1f}°F, Fan: {'On' if fan_output.presentValue else 'Off'}")
-    print("Python bound to:", socket.gethostbyname(socket.gethostname()))
+        print(f"Temp: {self.temp_sensor.presentValue:.1f}°F, Fan: {'On' if self.fan_output.presentValue else 'Off'}")
+        print("Python bound to:", socket.gethostbyname(socket.gethostname()))
 
-    Timer(5, deferred, [logic_loop, temp_sensor, fan_output]).start()
-
-def request(self, apdu):
-    if _debug: _log.debug("    - args: %r", args)
-    BIPSimpleApplication.request(self, apdu)
+        Timer(5, deferred, [self.logic_loop]).start()
 
 
-if __name__ == "__main__":
+# --- Initialization ---
+def main():
     if _debug: _log.debug("initialization")
-    if _debug: _log.debug("    - args: %r", args)
 
+    this_device = LocalDeviceObject(
+        objectName="RoomController",
+        objectIdentifier=("device", 12345),
+        maxApduLengthAccepted=1024,
+        segmentationSupported="segmentedBoth",
+        vendorIdentifier=15,
+        vendorName="B612"
+    )
+
+    address = Address("0.0.0.0:47808")
+    app = RoomControllerApplication(this_device, address)
+
+    if _debug: _log.debug("running")
+    run()
+
+# --- Main Entry ---
+if __name__ == "__main__":
     try:
-        # code goes here...
-
-        _log.debug("initialization")
-        # code goes here...
-
-        _log.debug("running")
-        # code goes here...
-
-        app, temp, fan = create_virtual_device(device_id=12345, port=47808)
-
-        deferred(logic_loop, temp, fan)
-
-        run()
-
-
+        main()
     except Exception as e:
         _log.exception("an error has occurred: %s", e)
     finally:
